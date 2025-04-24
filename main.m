@@ -4,8 +4,8 @@ clear;
 RedUAV = cell(1,2);
 BlueUAV = cell(1,2);
 
-RedUAV{1} = UAVAgent(1,4250,8000,10000,300,0,90);
-RedUAV{2} = UAVAgent(1,5250,9000,10000,300,0,90);
+RedUAV{1} = UAVAgent(1,4250,8000,10000,300,-90,0);
+RedUAV{2} = UAVAgent(1,5250,9000,10000,300,90,0);
 
 BlueUAV{1} = UAVAgent(1,1250,1000,10000,300,0,0);
 BlueUAV{2} = UAVAgent(1,2250,2500,10000,300,0,0);
@@ -43,33 +43,65 @@ end
 
 figure;
 hold on;
-colors_red = lines(length(RedUAV));
-colors_blue = lines(length(BlueUAV));
 
-% 绘制红方 UAV
+% 红蓝颜色定义
+color_red = [1, 0, 0];      % 红色
+color_blue = [0, 0.447, 0.741];  % MATLAB 默认蓝
+
+% 红方 UAV
 for i = 1:length(RedUAV)
-    traj = RedUAV{i}.state(1:3, :);   % 取出位置轨迹
-    x = traj(1, :); y = traj(2, :); z = traj(3, :)/100;
-    plot3(x, y, z, '-', 'Color', colors_red(i,:), 'LineWidth', 2);
-    scatter3(x(1), y(1), z(1), 60, 'go', 'filled');      % 起点
-    scatter3(x(end), y(end), z(end), 60, 'ro', 'filled'); % 终点
+    traj = RedUAV{i}.state(1:3, :);  % 轨迹是 3×T
+    x = traj(1, :); y = traj(2, :); z = traj(3, :);
+
+    if i == 1  % 只为第一个添加图例
+        h_red = plot3(x, y, z, '-', 'Color', color_red, 'LineWidth', 2);
+    else
+        plot3(x, y, z, '-', 'Color', color_red, 'LineWidth', 2);
+    end
+    scatter3(x(1), y(1), z(1), 50, 'g', 'filled');  % 起点
+    scatter3(x(end), y(end), z(end), 50, 'r', 'filled');  % 终点
 end
 
-% 绘制蓝方 UAV
+% 蓝方 UAV
 for i = 1:length(BlueUAV)
     traj = BlueUAV{i}.state(1:3, :);
     x = traj(1, :); y = traj(2, :); z = traj(3, :);
-    plot3(x, y, z, '--', 'Color', colors_blue(i,:), 'LineWidth', 2);
-    scatter3(x(1), y(1), z(1), 60, 'go', 'filled');
-    scatter3(x(end), y(end), z(end), 60, 'ro', 'filled');
+
+    if i == 1
+        h_blue = plot3(x, y, z, '--', 'Color', color_blue, 'LineWidth', 2);
+    else
+        plot3(x, y, z, '--', 'Color', color_blue, 'LineWidth', 2);
+    end
+    scatter3(x(1), y(1), z(1), 50, 'g', 'filled');
+    scatter3(x(end), y(end), z(end), 50, 'r', 'filled');
 end
 
 xlabel('X (m)');
 ylabel('Y (m)');
 zlabel('Z (m)');
 title('UAV Flight Trajectories');
+
+% 图例只显示红蓝
+legend([h_red, h_blue], {'Red UAVs', 'Blue UAVs'}, 'Location', 'best');
+
 grid on;
 axis equal;
-view(3);
-legend({'RedUAV 1', 'RedUAV 2', 'BlueUAV 1', 'BlueUAV 2'}, 'Location', 'best');
+view([45 30]);
+
+% 自动动态设置坐标范围（可选）
+all_x = []; all_y = []; all_z = [];
+for i = 1:length(RedUAV)
+    all_x = [all_x, RedUAV{i}.state(1, :)];
+    all_y = [all_y, RedUAV{i}.state(2, :)];
+    all_z = [all_z, RedUAV{i}.state(3, :)];
+end
+for i = 1:length(BlueUAV)
+    all_x = [all_x, BlueUAV{i}.state(1, :)];
+    all_y = [all_y, BlueUAV{i}.state(2, :)];
+    all_z = [all_z, BlueUAV{i}.state(3, :)];
+end
+
+xlim([min(all_x)-500, max(all_x)+500]);
+ylim([min(all_y)-500, max(all_y)+500]);
+zlim([min(all_z)-500, max(all_z)+500]);
 

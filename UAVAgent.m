@@ -18,6 +18,7 @@ classdef UAVAgent< handle
         id
         enemys
         current_target_id
+        uold = [0,0,0];
         ukf_list            % {1×N} cell，每个敌人的 UKF
         estimated_states    % {1×N} cell，每个敌人的状态估计结果（6×1）
         combat_states       % {1×N} cell，每个敌人的 [bearing; angle_off; dist]
@@ -40,7 +41,8 @@ classdef UAVAgent< handle
             v = curr(4); psi = curr(5); gamma = curr(6);
             dtt = obj.dt; g0 = obj.g;
             % 控制输入
-            u = obj.maneuver_lib(action_id, :)';  % [nx; ny; gamma_c]
+            u = obj.maneuver_lib(action_id, :)'+obj.uold;  % [nx; ny; gamma_c]
+            obj.uold = u;
             % 状态更新
             x = x + v * cos(gamma) * cos(psi) * dtt;
             y = y + v * cos(gamma) * sin(psi) * dtt;
@@ -203,23 +205,65 @@ classdef UAVAgent< handle
         % 选择动作
         function obj = select_and_update_action(obj)
             if isempty(obj.current_target_id)
-                action_id = 7;  % 默认保持不动
+                action_id = 7; % 默认保持不动
                 obj = obj.updata(action_id);
                 return;
             end
 
             idx = obj.current_target_id;
+            enemy = obj.enemys{idx};
             evaluator = obj.evaluators{idx};
-            combat_state = obj.combat_states{idx};
 
-            bearing = combat_state(1);
-            angle_off = combat_state(2);
-            dist = combat_state(3);
+            num_actions = 7;
+            utilities = zeros(1, num_actions);
 
-            [action_id, ~] = evaluator.select_best_action(bearing, angle_off, dist);
+            % 获取当前敌人的真实状态（假设已移除UKF）
+            current_enemy_state = enemy.state(:, end);
 
-            % 执行动作
-            obj = obj.updata(action_id);
+            % 遍历每个动作，预测状态并计算效用
+            for a = 1:num_actions
+                % 预测执行动作a后的自身状态
+                predicted_self_state = obj.predict_state(a);
+
+                % 计算预测后的战斗参数（bearing, angle_off, dist）
+                [bearing, angle_off, dist] = compute_predicted_combat_state(...
+                    predicted_self_state, current_enemy_state);
+
+                % 计算后验概率和效用
+                posterior = evaluator.compute_posterior(bearing, angle_off, dist);
+                actions = 1:4;
+utilities = arrayfun(@(a) evaluator.utility_given_state_action(a, bearing, angle_off, dist), actions);
+utility = sum(posterior .* utilities);
+                utilities(a) = utility;
+            end
+
+            % 选择效用最大的动作
+            [~, best_action] = max(utilities);
+            obj = obj.updata(best_action);
+        end
+
+       
+
+        function new_state = predict_state(obj, action_id)
+            % 获取当前状态
+            curr = obj.state(:, end);
+            x = curr(1); y = curr(2); z = curr(3);
+            v = curr(4); psi = curr(5); gamma = curr(6);
+            dtt = obj.dt; g0 = obj.g;
+
+            % 获取动作控制量
+            u = obj.maneuver_lib(action_id, :)';
+
+            % 预测新状态（不更新实际状态）
+            new_x = x + v * cos(gamma) * cos(psi) * dtt;
+            new_y = y + v * cos(gamma) * sin(psi) * dtt;
+            new_z = z + v * sin(gamma) * dtt;
+            new_v = v + g0 * u(1) * dtt;
+            new_psi = psi + (g0 * u(2) / max(new_v, 1e-3)) * dtt;
+            new_gamma = gamma + (g0 * tan(u(3)) / max(new_v, 1e-3)) * dtt;
+
+            % 返回预测状态
+            new_state = [new_x; new_y; new_z; new_v; wrapToPi(new_psi); new_gamma];
         end
     end
 end
@@ -278,3 +322,26 @@ angle_off = acos(dot(-rel, enemy_vec) / (dist + 1e-6));
 
 z = [bearing; angle_off; dist];
 end
+
+
+ % 辅助函数：根据预测状态计算战斗参数
+        function [bearing, angle_off, dist] = compute_predicted_combat_state(self_state, enemy_state)
+            self_pos = self_state(1:3);
+            enemy_pos = enemy_state(1:3);
+            rel_vec = enemy_pos - self_pos;
+            dist = norm(rel_vec);
+
+            % 自身方向向量
+            psi = self_state(5);
+            gamma = self_state(6);
+            self_vec = [cos(gamma)*cos(psi); cos(gamma)*sin(psi); sin(gamma)];
+
+            % 敌人方向向量
+            psi_e = enemy_state(5);
+            gamma_e = enemy_state(6);
+            enemy_vec = [cos(gamma_e)*cos(psi_e); cos(gamma_e)*sin(psi_e); sin(gamma_e)];
+
+            % 计算bearing和angle-off
+            bearing = acos(dot(rel_vec, self_vec)) / (dist + 1e-6);
+            angle_off = acos(dot(-rel_vec, enemy_vec) / (dist + 1e-6));
+        end
