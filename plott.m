@@ -1,7 +1,11 @@
 figure;
 hold on;
 grid on;
-axis equal;
+xlim([0 5500]);    % 只显示X轴1000到5500的区域
+ylim([1000 12000]);   % 手动设置Y轴，覆盖整个飞行高度
+pbaspect([1 1 1]);    % 保持x/y/z比例为1:1:1
+axis square;          % 保持绘图区是正方形
+grid on;
 xlabel('X (m)');
 ylabel('Y (m)');
 zlabel('Z (m)');

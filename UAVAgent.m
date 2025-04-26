@@ -1,5 +1,5 @@
-classdef UAVAgent< handle
-    properties(Constant)
+classdef UAVAgent < handle
+    properties (Constant)
         g = 9.8;
         maneuver_lib = [
             3, 0, 0;
@@ -9,7 +9,7 @@ classdef UAVAgent< handle
             0, 0, 1.05;
             0, 0, -1.05;
             0, 0, 0
-            ];
+        ];
     end
 
     properties
@@ -17,259 +17,144 @@ classdef UAVAgent< handle
         dt = 0.1;
         id
         enemys
-        current_target_id
-        uold = [0,0,0];
+        current_target_id = [];
+        uold = [0, 0, 0];
         ukf_list            % {1×N} cell，每个敌人的 UKF
-        estimated_states    % {1×N} cell，每个敌人的状态估计结果（6×1）
+        estimated_states    % {1×N} cell，每个敌人的状态估计
         combat_states       % {1×N} cell，每个敌人的 [bearing; angle_off; dist]
-        evaluators              % {1×N} 每个敌人的 CombatEvaluator 实例
-        situation_posterior     % {1×N} 每个敌人的后验概率（1×4）
-        situation_utilities     % {1×N} 每个敌人的效用值（1×4）
+        evaluators          % {1×N} 每个敌人的 CombatEvaluator 实例
+        situation_posterior % {1×N} 态势后验概率（1×4）
+        situation_utilities % {1×N} 各态势的效用（1×4）
     end
 
     methods
-        % 构造函数
         function obj = UAVAgent(id,x,y,z,v,psi,gamma)
             obj.id = id;
             obj.state = [x; y; z; v; psi; gamma];
         end
-        % 状态更新
+%% 状态更新
         function obj = updata(obj, action_id)
-            % 获取当前状态
             curr = obj.state(:, end);
             x = curr(1); y = curr(2); z = curr(3);
             v = curr(4); psi = curr(5); gamma = curr(6);
-            dtt = obj.dt; g0 = obj.g;
-            % 控制输入
-            u = obj.maneuver_lib(action_id, :)'+obj.uold;  % [nx; ny; gamma_c]
+            dtt = obj.dt;
+
+            % 控制输入处理
+            u = 0.25 * obj.maneuver_lib(action_id, :) + obj.uold;
+            u = max(min(u, [3, 5, 1.05]), [-3, -5, -1.05]);  % 限幅
             obj.uold = u;
+
             % 状态更新
             x = x + v * cos(gamma) * cos(psi) * dtt;
             y = y + v * cos(gamma) * sin(psi) * dtt;
             z = z + v * sin(gamma) * dtt;
-            v = v + g0 * u(1) * dtt;
-            psi = psi + (g0 * u(2) / max(v, 1e-3)) * dtt;
-            gamma = gamma + (g0 * tan(u(3)) / max(v, 1e-3)) * dtt;
-            % 新状态列
+            v = v + obj.g * u(1) * dtt;
+            v = min(v,408);
+            psi = psi + (obj.g * u(2) / max(v, 1e-3)) * dtt;
+            gamma = gamma + (obj.g * tan(u(3)) / max(v, 1e-3)) * dtt;
+
             new_state = [x; y; z; v; wrapToPi(psi); gamma];
-            % === 追加 ===
             obj.state(:, end+1) = new_state;
         end
-
-        % 战斗态势
-        function [bearing, angle_off, dist] = fight_state(obj, enemy)
-            self_pos = obj.state(1:3);
-            enemy_pos = enemy.state(1:3);
-            rel_vec = enemy_pos(:) - self_pos(:);
-            dist = norm(rel_vec);
-
-            % 自己方向
-            psi = obj.state(5); gamma = obj.state(6);
-            self_vec = [cos(gamma)*cos(psi); cos(gamma)*sin(psi); sin(gamma)];
-
-            % 敌人方向
-            psi_e = enemy.state(5); gamma_e = enemy.state(6);
-            enemy_vec = [cos(gamma_e)*cos(psi_e); cos(gamma_e)*sin(psi_e); sin(gamma_e)];
-
-            % 保证都是列向量
-            self_vec = self_vec(:);
-            enemy_vec = enemy_vec(:);
-
-            % dot 操作
-            bearing = acos(dot(rel_vec, self_vec) / (dist + 1e-6));
-            angle_off = acos(dot(-rel_vec, enemy_vec) / (dist + 1e-6));
-        end
-
-        % 初始化用于某个敌人的 UKF
+%% 初始化UKF估计器
         function obj = init_ukf(obj, enemy_state)
-            % 参数说明：
-            %   enemy_state - 6×1 敌方 UAV 的真实状态（用于初始化 UKF）
-
-            % === 参数设置 ===
-            state_dim = 6;
-            obs_dim = 3;
-            Q = 0.1 * eye(state_dim);   % 过程噪声协方差
-            R = 10 * eye(obs_dim);      % 观测噪声协方差
-            alpha = 1e-3; beta = 2; kappa = 1e-3;
-
-            % === 创建 UKF 对象 ===
-            ukf_obj = ukf(state_dim, obs_dim, Q, R, alpha, beta, kappa);
-
-            % === 设置 UKF 初始值 ===
+            state_dim = 6; obs_dim = 3;
+            Q = 0.1 * eye(state_dim);
+            R = 10 * eye(obs_dim);
+            ukf_obj = ukf(state_dim, obs_dim, Q, R, 1e-3, 2, 1e-3);
             ukf_obj.x = enemy_state;
             ukf_obj.P = eye(state_dim);
 
-            % === 加入列表 ===
             new_index = length(obj.ukf_list) + 1;
             obj.ukf_list{new_index} = ukf_obj;
             obj.estimated_states{new_index} = enemy_state;
-            obj.combat_states{new_index} = [0; 0; 0];  % 先占位
+            obj.combat_states{new_index} = [0; 0; 0];
         end
-
-
-        % 遍历每个敌人，观测 + UKF 更新 + 战斗态势评估
+%% 估计敌方位置、态势
         function obj = estimate_enemies(obj)
-
             for i = 1:length(obj.enemys)
-                enemy = obj.enemys{i};       % 当前敌机
-                ukf_i = obj.ukf_list{i};     % 对该敌机的 UKF
+                enemy = obj.enemys{i};
+                ukf_i = obj.ukf_list{i};
 
-                % === Step 1: 获取观测（真实敌人 -> 当前无人机的观测值）
-                [bearing, angle_off, dist] = obj.fight_state(enemy);
+                [bearing, angle_off, dist] = compute_predicted_combat_state(obj.state(:,end), enemy.state(:,end));
                 z = [bearing; angle_off; dist];
 
-                % === Step 2: 定义观测函数 H(x)
-                h = @(x) default_observation(obj.state(:,end),x);  % x = 6×1，估计状态
-
-                % === Step 3: 状态预测（可选简化为恒等）
+                h = @(x) default_observation(obj.state(:,end), x);
                 f = @(x) default_transition(x, obj.dt);
+
                 ukf_i = ukf_i.predict(f);
-
-                % === Step 4: 状态更新
                 ukf_i = ukf_i.update(z, h);
-                x_est = ukf_i.x;
 
-                % === Step 5: 保存结果
+                x_est = ukf_i.x;
                 obj.ukf_list{i} = ukf_i;
                 obj.estimated_states{i} = x_est;
                 obj.combat_states{i} = [bearing; angle_off; dist];
-            end
 
-            % 假设你为每个敌人都创建了一个 CombatEvaluator 实例
-            % 比如 obj.evaluators{i} = CombatEvaluator();
-
-            for i = 1:length(obj.enemys)
-                % x_est = obj.estimated_states{i};           % 估计状态（6×1）
-
-                bearing = obj.combat_states{i}(1);         % 观测 bearing
-                angle_off = obj.combat_states{i}(2);       % 观测 angle_off
-                dist = obj.combat_states{i}(3);            % 观测 dist
-
-                % === Step 1: 更新后验概率 ===
-                evaluator = obj.evaluators{i};             % CombatEvaluator 实例
+                evaluator = obj.evaluators{i};
+                evaluator.dtt = obj.dt;  % 确保时步一致
                 [posterior, evaluator] = evaluator.compute_posterior(bearing, angle_off, dist);
-                obj.evaluators{i} = evaluator;             % 更新对象中的 evaluator
+                obj.evaluators{i} = evaluator;
 
-                % === Step 2: 计算各态势下的效用 ===
-                utilities = zeros(1, 4);  % 每个态势下的效用（不考虑动作选择）
+                utilities = zeros(1, 4);
                 for s = 1:4
                     utilities(s) = evaluator.utility_given_state_action(s, bearing, angle_off, dist);
                 end
-
-                % === 你可以将 posterior 和 utilities 存下来，用于决策或分析 ===
                 obj.situation_posterior{i} = posterior;
                 obj.situation_utilities{i} = utilities;
-
             end
         end
-        % 选择目标
+%% 选择敌机
         function obj = select_target(obj)
             num_enemies = length(obj.enemys);
             utility_scores = zeros(1, num_enemies);
 
-            % Step 1: 计算每个敌机的最大态势效用
             for i = 1:num_enemies
-                utilities = obj.situation_utilities{i};  % 1x4
-                posterior = obj.situation_posterior{i};  % 1x4
-                % 期望效用
+                utilities = obj.situation_utilities{i};
+                posterior = obj.situation_posterior{i};
                 utility_scores(i) = sum(posterior .* utilities);
             end
 
-            % Step 2: 判断是否首次选择
             if isempty(obj.current_target_id)
                 [~, obj.current_target_id] = max(utility_scores);
                 return;
             end
 
-            % Step 3: 判断当前目标是否失效或效用过低
             current_score = utility_scores(obj.current_target_id);
             [best_score, best_idx] = max(utility_scores);
 
-            should_switch = false;
-
-            % 条件1：当前目标异常（例如距离过远或未估计）
             combat_state = obj.combat_states{obj.current_target_id};
             if any(isnan(combat_state)) || combat_state(3) > 30000
-                should_switch = true;
+                obj.current_target_id = best_idx;
+                return;
             end
 
-            % 条件2：新目标效用高出 1.3 倍
             if best_score > 1.3 * current_score
-                should_switch = true;
-            end
-
-            if should_switch
                 obj.current_target_id = best_idx;
             end
         end
-        % 选择动作
+        %% 选择最佳动作
         function obj = select_and_update_action(obj)
             if isempty(obj.current_target_id)
-                action_id = 7; % 默认保持不动
-                obj = obj.updata(action_id);
+                obj = obj.updata(7);  % 默认动作：保持不动
                 return;
             end
 
             idx = obj.current_target_id;
             enemy = obj.enemys{idx};
             evaluator = obj.evaluators{idx};
+            evaluator.dtt = obj.dt;
 
-            num_actions = 7;
-            utilities = zeros(1, num_actions);
+            self_state = obj.state(:, end);
+            enemy_state = enemy.state(:, end);
 
-            % 获取当前敌人的真实状态（假设已移除UKF）
-            current_enemy_state = enemy.state(:, end);
-
-            % 遍历每个动作，预测状态并计算效用
-            for a = 1:num_actions
-                % 预测执行动作a后的自身状态
-                predicted_self_state = obj.predict_state(a);
-
-                % 计算预测后的战斗参数（bearing, angle_off, dist）
-                [bearing, angle_off, dist] = compute_predicted_combat_state(...
-                    predicted_self_state, current_enemy_state);
-
-                % 计算后验概率和效用
-                posterior = evaluator.compute_posterior(bearing, angle_off, dist);
-                actions = 1:4;
-utilities = arrayfun(@(a) evaluator.utility_given_state_action(a, bearing, angle_off, dist), actions);
-utility = sum(posterior .* utilities);
-                utilities(a) = utility;
-            end
-
-            % 选择效用最大的动作
-            [~, best_action] = max(utilities);
+            [best_action, ~] = evaluator.select_best_action(self_state, enemy_state);
             obj = obj.updata(best_action);
-        end
-
-       
-
-        function new_state = predict_state(obj, action_id)
-            % 获取当前状态
-            curr = obj.state(:, end);
-            x = curr(1); y = curr(2); z = curr(3);
-            v = curr(4); psi = curr(5); gamma = curr(6);
-            dtt = obj.dt; g0 = obj.g;
-
-            % 获取动作控制量
-            u = obj.maneuver_lib(action_id, :)';
-
-            % 预测新状态（不更新实际状态）
-            new_x = x + v * cos(gamma) * cos(psi) * dtt;
-            new_y = y + v * cos(gamma) * sin(psi) * dtt;
-            new_z = z + v * sin(gamma) * dtt;
-            new_v = v + g0 * u(1) * dtt;
-            new_psi = psi + (g0 * u(2) / max(new_v, 1e-3)) * dtt;
-            new_gamma = gamma + (g0 * tan(u(3)) / max(new_v, 1e-3)) * dtt;
-
-            % 返回预测状态
-            new_state = [new_x; new_y; new_z; new_v; wrapToPi(new_psi); new_gamma];
         end
     end
 end
 
 
-
+%% ukf状态更新
 function x_next = default_transition(x, dt)
 % x: 当前状态 [x; y; z; v; psi; gamma]
 % dt: 时间步长
@@ -291,7 +176,7 @@ x_next(3) = x(3) + dz * dt;
 
 % 其他状态不变（可拓展：加入模型噪声或控制项）
 end
-
+%% ukf观测函数
 function z = default_observation(x_self, x_enemy)
 % x_self: 己方状态 [x; y; z; v; psi; gamma]
 % x_enemy: 敌方状态 [x; y; z; v; psi; gamma]
@@ -324,24 +209,19 @@ z = [bearing; angle_off; dist];
 end
 
 
- % 辅助函数：根据预测状态计算战斗参数
-        function [bearing, angle_off, dist] = compute_predicted_combat_state(self_state, enemy_state)
-            self_pos = self_state(1:3);
-            enemy_pos = enemy_state(1:3);
-            rel_vec = enemy_pos - self_pos;
-            dist = norm(rel_vec);
+ %% 辅助函数：根据预测状态计算战斗参数
+function [bearing, angle_off, dist] = compute_predicted_combat_state(self_state, enemy_state)
+    self_pos = self_state(1:3);
+    enemy_pos = enemy_state(1:3);
+    rel_vec = enemy_pos - self_pos;
+    dist = norm(rel_vec);
 
-            % 自身方向向量
-            psi = self_state(5);
-            gamma = self_state(6);
-            self_vec = [cos(gamma)*cos(psi); cos(gamma)*sin(psi); sin(gamma)];
+    psi = self_state(5); gamma = self_state(6);
+    self_vec = [cos(gamma)*cos(psi); cos(gamma)*sin(psi); sin(gamma)];
 
-            % 敌人方向向量
-            psi_e = enemy_state(5);
-            gamma_e = enemy_state(6);
-            enemy_vec = [cos(gamma_e)*cos(psi_e); cos(gamma_e)*sin(psi_e); sin(gamma_e)];
+    psi_e = enemy_state(5); gamma_e = enemy_state(6);
+    enemy_vec = [cos(gamma_e)*cos(psi_e); cos(gamma_e)*sin(psi_e); sin(gamma_e)];
 
-            % 计算bearing和angle-off
-            bearing = acos(dot(rel_vec, self_vec)) / (dist + 1e-6);
-            angle_off = acos(dot(-rel_vec, enemy_vec) / (dist + 1e-6));
-        end
+    bearing = acos(dot(rel_vec, self_vec) / (dist + 1e-6));
+    angle_off = acos(dot(-rel_vec, enemy_vec) / (dist + 1e-6));
+end

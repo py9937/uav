@@ -1,15 +1,17 @@
 clc;
 clear;
-% 初始化
-RedUAV = cell(1,2);
-BlueUAV = cell(1,2);
 
-RedUAV{1} = UAVAgent(1,4250,8000,10000,300,-90,0);
-RedUAV{2} = UAVAgent(1,5250,9000,10000,300,90,0);
+% === 初始化参数 ===
+RedUAV = cell(1, 2);
+BlueUAV = cell(1, 2);
 
-BlueUAV{1} = UAVAgent(1,1250,1000,10000,300,0,0);
-BlueUAV{2} = UAVAgent(1,2250,2500,10000,300,0,0);
+RedUAV{1} = UAVAgent(1, 4250, 8000, 10000, 300, pi/2, 0);
+RedUAV{2} = UAVAgent(2, 5250, 9000, 10000, 300, pi/2, 0);
 
+BlueUAV{1} = UAVAgent(3, 1250, 1000, 10000, 300, 0, 0);
+BlueUAV{2} = UAVAgent(4, 2250, 2500, 10000, 300, 0, 0);
+
+% === 设置敌人、初始化 UKF 和 CombatEvaluator ===
 for i = 1:length(RedUAV)
     RedUAV{i}.enemys = BlueUAV;
     for j = 1:length(BlueUAV)
@@ -25,83 +27,81 @@ for i = 1:length(BlueUAV)
     end
 end
 
-for step = 0.1 : 0.1 : 100
-    % ukf预测敌机位置并根据敌机位置计算战斗状态
+% === 终止条件设置 ===
+bearing_thresh = pi / 6;
+angle_thresh = pi;
+dist_thresh = 1000;
+
+% === 主仿真循环 ===
+max_time = 60;
+dt = 0.1;
+terminated = false;
+
+for t = 0:dt:max_time
+    % 蓝方更新
     for i = 1:length(BlueUAV)
         BlueUAV{i} = BlueUAV{i}.estimate_enemies();
         BlueUAV{i}.select_target();
         BlueUAV{i}.select_and_update_action();
     end
+
+    % 红方更新
     for i = 1:length(RedUAV)
         RedUAV{i} = RedUAV{i}.estimate_enemies();
         RedUAV{i}.select_target();
         RedUAV{i}.select_and_update_action();
     end
-    % 
 
+    % === 终止条件判定 ===
+    for i = 1:length(RedUAV)
+        tgt_id = RedUAV{i}.current_target_id;
+        if isempty(tgt_id), continue; end
+        combat_state = RedUAV{i}.combat_states{tgt_id};
+        if all(combat_state < [bearing_thresh; angle_thresh; dist_thresh])
+            fprintf('✅ Terminated at t = %.1f s: RedUAV %d reached target %d\n', ...
+                t, i, tgt_id);
+            terminated = true;
+            break;
+        end
+    end
+
+    if terminated
+        break;
+    end
 end
 
+% === 绘图 ===
 figure;
 hold on;
+color_red = [1, 0, 0];
+color_blue = [0, 0.447, 0.741];
 
-% 红蓝颜色定义
-color_red = [1, 0, 0];      % 红色
-color_blue = [0, 0.447, 0.741];  % MATLAB 默认蓝
-
-% 红方 UAV
 for i = 1:length(RedUAV)
-    traj = RedUAV{i}.state(1:3, :);  % 轨迹是 3×T
-    x = traj(1, :); y = traj(2, :); z = traj(3, :);
-
-    if i == 1  % 只为第一个添加图例
-        h_red = plot3(x, y, z, '-', 'Color', color_red, 'LineWidth', 2);
-    else
-        plot3(x, y, z, '-', 'Color', color_red, 'LineWidth', 2);
-    end
-    scatter3(x(1), y(1), z(1), 50, 'g', 'filled');  % 起点
-    scatter3(x(end), y(end), z(end), 50, 'r', 'filled');  % 终点
+    traj = RedUAV{i}.state(1:3, :);
+    plot3(traj(1, :), traj(2, :), traj(3, :), '-', 'Color', color_red, 'LineWidth', 2);
+    scatter3(traj(1, 1), traj(2, 1), traj(3, 1), 50, 'g', 'filled');
+    scatter3(traj(1, end), traj(2, end), traj(3, end), 50, 'r', 'filled');
 end
 
-% 蓝方 UAV
 for i = 1:length(BlueUAV)
     traj = BlueUAV{i}.state(1:3, :);
-    x = traj(1, :); y = traj(2, :); z = traj(3, :);
-
-    if i == 1
-        h_blue = plot3(x, y, z, '--', 'Color', color_blue, 'LineWidth', 2);
-    else
-        plot3(x, y, z, '--', 'Color', color_blue, 'LineWidth', 2);
-    end
-    scatter3(x(1), y(1), z(1), 50, 'g', 'filled');
-    scatter3(x(end), y(end), z(end), 50, 'r', 'filled');
+    plot3(traj(1, :), traj(2, :), traj(3, :), '--', 'Color', color_blue, 'LineWidth', 2);
+    scatter3(traj(1, 1), traj(2, 1), traj(3, 1), 50, 'g', 'filled');
+    scatter3(traj(1, end), traj(2, end), traj(3, end), 50, 'r', 'filled');
 end
 
-xlabel('X (m)');
-ylabel('Y (m)');
-zlabel('Z (m)');
+xlabel('X (m)'); ylabel('Y (m)'); zlabel('Z (m)');
 title('UAV Flight Trajectories');
+legend({'Red Traj', 'Blue Traj'}, 'Location', 'best');
+grid on; axis equal; view([45 30]);
 
-% 图例只显示红蓝
-legend([h_red, h_blue], {'Red UAVs', 'Blue UAVs'}, 'Location', 'best');
-
-grid on;
-axis equal;
-view([45 30]);
-
-% 自动动态设置坐标范围（可选）
+% 坐标自适应
 all_x = []; all_y = []; all_z = [];
-for i = 1:length(RedUAV)
-    all_x = [all_x, RedUAV{i}.state(1, :)];
-    all_y = [all_y, RedUAV{i}.state(2, :)];
-    all_z = [all_z, RedUAV{i}.state(3, :)];
+for i = [RedUAV, BlueUAV]
+    all_x = [all_x, i{1}.state(1, :)];
+    all_y = [all_y, i{1}.state(2, :)];
+    all_z = [all_z, i{1}.state(3, :)];
 end
-for i = 1:length(BlueUAV)
-    all_x = [all_x, BlueUAV{i}.state(1, :)];
-    all_y = [all_y, BlueUAV{i}.state(2, :)];
-    all_z = [all_z, BlueUAV{i}.state(3, :)];
-end
-
 xlim([min(all_x)-500, max(all_x)+500]);
 ylim([min(all_y)-500, max(all_y)+500]);
 zlim([min(all_z)-500, max(all_z)+500]);
-
